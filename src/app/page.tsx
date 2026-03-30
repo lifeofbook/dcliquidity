@@ -153,7 +153,7 @@ export default function HomePage() {
           {data && !loading && (
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
               {/* Chart panel */}
-              <div className="bg-[#13171f] rounded-xl border border-[#21262d] p-5">
+              <div className="bg-[#13171f] rounded-xl border border-[#21262d] p-5 overflow-y-auto max-h-[85vh]">
                 {/* Chart toolbar */}
                 <div className="flex items-center justify-between mb-5">
                   <div>
