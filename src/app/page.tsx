@@ -18,14 +18,14 @@ const POPULAR_TOKENS = [
   { symbol: "USDC", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
 ];
 
-type ChartRange = 20 | 30 | 50;
+type ChartRange = 20 | 50 | 100 | 200;
 
 export default function HomePage() {
   const [data, setData] = useState<AggregatedLiquidity | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentMint, setCurrentMint] = useState<string | null>(null);
-  const [chartRange, setChartRange] = useState<ChartRange>(30);
+  const [chartRange, setChartRange] = useState<ChartRange>(20);
 
   const loadToken = useCallback(async (mint: string) => {
     setLoading(true);
@@ -168,7 +168,7 @@ export default function HomePage() {
                   <div className="flex items-center gap-2">
                     {/* Range selector */}
                     <div className="flex items-center gap-1 bg-[#1a1f2e] rounded-lg p-1 border border-[#2a3142]">
-                      {([20, 30, 50] as ChartRange[]).map((r) => (
+                      {([20, 50, 100, 200] as ChartRange[]).map((r) => (
                         <button
                           key={r}
                           onClick={() => setChartRange(r)}

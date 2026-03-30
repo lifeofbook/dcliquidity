@@ -22,14 +22,11 @@ interface MeteoraGroupsResponse {
   }>;
 }
 
-async function fetchWithTimeout(url: string, ms = 10000): Promise<Response> {
+async function fetchWithTimeout(url: string, ms = 12000): Promise<Response> {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), ms);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      next: { revalidate: 60 },
-    });
+    const res = await fetch(url, { signal: ctrl.signal, next: { revalidate: 60 } });
     clearTimeout(id);
     return res;
   } catch (e) {
@@ -40,18 +37,14 @@ async function fetchWithTimeout(url: string, ms = 10000): Promise<Response> {
 
 export async function getMeteoraPools(tokenMint: string): Promise<MeteoraPool[]> {
   try {
-    const res = await fetchWithTimeout(
-      `${METEORA_API}/pair/all_by_groups?include_unknown=true&sort_key=tvl&order_by=desc&search_term=${tokenMint}`
-    );
+    const url = `${METEORA_API}/pair/all_by_groups?include_unknown=true&sort_key=tvl&order_by=desc&search_term=${tokenMint}`;
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data: MeteoraGroupsResponse = await res.json();
     const all: MeteoraPool[] = [];
     for (const group of data?.groups ?? []) {
       for (const pair of group.pairs ?? []) {
-        if (
-          pair.mint_x === tokenMint ||
-          pair.mint_y === tokenMint
-        ) {
+        if (pair.mint_x === tokenMint || pair.mint_y === tokenMint) {
           all.push(pair);
         }
       }
@@ -60,45 +53,6 @@ export async function getMeteoraPools(tokenMint: string): Promise<MeteoraPool[]>
   } catch {
     return [];
   }
-}
-
-/**
- * For a DLMM pool, distribute TVL into discrete price buckets using bin_step.
- * We model the active liquidity region as ±N bins around the active bin,
- * where N bins cover roughly 20% of the price range.
- */
-function distributeDlmmTvl(
-  tokenPriceUsd: number,
-  binStep: number, // in basis points
-  tvlUsd: number,
-  source: LiquidityPosition["source"]
-): LiquidityPosition[] {
-  const positions: LiquidityPosition[] = [];
-  if (tvlUsd <= 0) return positions;
-
-  const stepFraction = binStep / 10000; // e.g. 25 bps → 0.0025
-
-  // Distribute over ±40 bins (covers ~10-40% range depending on bin_step)
-  const halfRange = 40;
-  const totalBins = halfRange * 2;
-
-  for (let i = -halfRange; i < halfRange; i++) {
-    const priceLow = tokenPriceUsd * Math.pow(1 + stepFraction, i);
-    const priceHigh = tokenPriceUsd * Math.pow(1 + stepFraction, i + 1);
-
-    // Bell-curve weight: more liquidity near active price
-    const distFromCenter = Math.abs(i + 0.5);
-    const weight = Math.exp(-0.5 * Math.pow(distFromCenter / (halfRange / 3), 2));
-
-    positions.push({
-      priceLow,
-      priceHigh,
-      liquidityUsd: (tvlUsd / totalBins) * weight * 2,
-      source,
-    });
-  }
-
-  return positions;
 }
 
 export async function getMeteoraLiquidity(
@@ -114,10 +68,39 @@ export async function getMeteoraLiquidity(
     const tvlUsd = pool.total_value_locked_usd ?? 0;
     if (tvlUsd <= 0) continue;
 
-    // Use bin_step to build a realistic distribution
-    const binStep = pool.bin_step ?? 25;
-    const binPositions = distributeDlmmTvl(tokenPriceUsd, binStep, tvlUsd, "meteora");
-    positions.push(...binPositions);
+    const binStep = pool.bin_step ?? 25; // bps
+    const stepFraction = binStep / 10000;
+
+    // DLMM: concentrate most liquidity in ±(10 bins) around current price
+    // then gradually less further out
+    const halfInner = 10;
+    const halfOuter = 50;
+
+    // Inner: 70% of TVL in ±halfInner bins
+    const innerUsd = tvlUsd * 0.70;
+    for (let i = -halfInner; i < halfInner; i++) {
+      const dist = Math.abs(i + 0.5);
+      const weight = Math.exp(-0.5 * Math.pow(dist / (halfInner / 2.5), 2));
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + stepFraction, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + stepFraction, i + 1),
+        liquidityUsd: innerUsd * weight,
+        source: "meteora",
+      });
+    }
+
+    // Outer: 30% of TVL in halfInner to halfOuter bins
+    const outerBins = halfOuter - halfInner;
+    const outerUsdPerBin = (tvlUsd * 0.30) / (outerBins * 2);
+    for (let i = -halfOuter; i < halfOuter; i++) {
+      if (Math.abs(i) <= halfInner) continue;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + stepFraction, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + stepFraction, i + 1),
+        liquidityUsd: outerUsdPerBin,
+        source: "meteora",
+      });
+    }
   }
 
   return positions;

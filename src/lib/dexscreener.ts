@@ -19,31 +19,113 @@ interface DexScreenerResponse {
   pairs: DexScreenerPair[] | null;
 }
 
-const DEX_ID_MAP: Record<string, DEXSource> = {
-  meteora: "meteora",
-  "meteora-dlmm": "meteora",
-  raydium: "raydium",
-  "raydium-clmm": "raydium",
-  orca: "orca",
-  "pump-fun": "pumpfun",
-  pumpfun: "pumpfun",
-};
+function mapDexId(dexId: string): DEXSource {
+  const id = (dexId ?? "").toLowerCase();
+  if (id.includes("meteora")) return "meteora";
+  if (id.includes("raydium")) return "raydium";
+  if (id.includes("orca")) return "orca";
+  if (id.includes("pump")) return "pumpfun";
+  return "raydium";
+}
 
 /**
- * Estimate the price range a pool's liquidity covers, based on DEX type.
- * - DLMM / CLMM (concentrated): narrow range
- * - AMM / constant product: wide range
+ * For DLMM (Meteora) distribute heavily concentrated around current price.
+ * For CLMM (Raydium/Orca) slightly wider concentration.
+ * For AMM/constant product distribute proportionally (higher weight near price).
  */
-function priceRange(dexId: string): { low: number; high: number } {
-  const id = dexId.toLowerCase();
+function buildPositions(
+  dexId: string,
+  source: DEXSource,
+  liquidityUsd: number,
+  tokenPriceUsd: number
+): LiquidityPosition[] {
+  const id = (dexId ?? "").toLowerCase();
+  const positions: LiquidityPosition[] = [];
+
   if (id.includes("meteora") || id.includes("dlmm")) {
-    return { low: 0.88, high: 1.12 }; // ±12%
+    // DLMM: very concentrated — 60% within ±5%, 30% ±5-20%, 10% ±20-50%
+    const innerUsd = liquidityUsd * 0.60;
+    const midUsd = liquidityUsd * 0.30;
+    const outerUsd = liquidityUsd * 0.10;
+    const NUM_INNER = 10; // 10 buckets covering ±5%
+    const NUM_MID = 30;
+    const NUM_OUTER = 60;
+
+    // inner ±5%
+    for (let i = -NUM_INNER / 2; i < NUM_INNER / 2; i++) {
+      const step = 0.01;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + step, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + step, i + 1),
+        liquidityUsd: innerUsd / NUM_INNER,
+        source,
+      });
+    }
+    // mid ±5–20%
+    for (let i = -NUM_MID / 2; i < NUM_MID / 2; i++) {
+      if (Math.abs(i) < NUM_INNER / 2) continue;
+      const step = 0.01;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + step, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + step, i + 1),
+        liquidityUsd: midUsd / (NUM_MID - NUM_INNER),
+        source,
+      });
+    }
+    // outer ±20–50%
+    for (let i = -NUM_OUTER / 2; i < NUM_OUTER / 2; i++) {
+      if (Math.abs(i) < NUM_MID / 2) continue;
+      const step = 0.01;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + step, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + step, i + 1),
+        liquidityUsd: outerUsd / (NUM_OUTER - NUM_MID),
+        source,
+      });
+    }
+    return positions;
   }
+
   if (id.includes("clmm") || id.includes("orca")) {
-    return { low: 0.82, high: 1.18 }; // ±18%
+    // CLMM: concentrated ±20%, heavier near current price
+    const RANGE = 40;
+    for (let i = -RANGE / 2; i < RANGE / 2; i++) {
+      const dist = Math.abs(i + 0.5);
+      const weight = Math.exp(-0.5 * Math.pow(dist / (RANGE / 5), 2));
+      const step = 0.01;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + step, i),
+        priceHigh: tokenPriceUsd * Math.pow(1 + step, i + 1),
+        liquidityUsd: liquidityUsd * weight,
+        source,
+      });
+    }
+    // normalize
+    const total = positions.reduce((s, p) => s + p.liquidityUsd, 0);
+    return positions.map(p => ({ ...p, liquidityUsd: p.liquidityUsd / total * liquidityUsd }));
   }
-  // AMM / pump.fun constant product — spread from 0 to ∞ but show ±50%
-  return { low: 0.5, high: 1.5 };
+
+  // AMM / constant product: proportional depth — proportional to 1/(relative_price)
+  // More weight near current price, less far away
+  const RANGE = 200;
+  const weights: number[] = [];
+  for (let i = -RANGE / 2; i < RANGE / 2; i++) {
+    const relPrice = Math.pow(1.01, i + 0.5);
+    // For constant product, depth per price unit ∝ 1/sqrt(relPrice)
+    weights.push(1 / Math.sqrt(relPrice));
+  }
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  for (let i = 0; i < RANGE; i++) {
+    const idx = i - RANGE / 2;
+    const step = 0.01;
+    positions.push({
+      priceLow: tokenPriceUsd * Math.pow(1 + step, idx),
+      priceHigh: tokenPriceUsd * Math.pow(1 + step, idx + 1),
+      liquidityUsd: liquidityUsd * weights[i] / totalWeight,
+      source,
+    });
+  }
+  return positions;
 }
 
 export async function getDexScreenerLiquidity(
@@ -66,19 +148,9 @@ export async function getDexScreenerLiquidity(
     for (const pair of pairs) {
       const liquidityUsd = pair.liquidity?.usd ?? 0;
       if (liquidityUsd <= 0) continue;
-
-      const dexId = pair.dexId?.toLowerCase() ?? "";
-      const source: DEXSource = DEX_ID_MAP[dexId] ?? "raydium";
-
-      // Use current token price for price range
-      const { low, high } = priceRange(dexId);
-
-      positions.push({
-        priceLow: tokenPriceUsd * low,
-        priceHigh: tokenPriceUsd * high,
-        liquidityUsd,
-        source,
-      });
+      const source = mapDexId(pair.dexId);
+      const built = buildPositions(pair.dexId, source, liquidityUsd, tokenPriceUsd);
+      positions.push(...built);
     }
 
     return positions;

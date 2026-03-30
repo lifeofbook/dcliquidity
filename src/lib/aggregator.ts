@@ -10,7 +10,7 @@ import type {
  * Number of buckets on each side of current price (support + resistance).
  * e.g. 50 means we show ±50% from current price in 1% steps.
  */
-const BUCKET_RANGE = 50;
+const BUCKET_RANGE = 200;
 const BUCKET_STEP_PCT = 1; // each bucket = 1% price change
 
 function emptySourceBreakdown() {
