@@ -38,18 +38,52 @@ export async function getTokenInfo(mint: string): Promise<TokenInfo | null> {
       fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${mint}&vsToken=${USDC_MINT}`),
     ]);
 
-    if (!tokenRes.ok) return null;
-    const token = await tokenRes.json();
     const priceData = priceRes.ok ? await priceRes.json() : null;
+    const price: number = priceData?.data?.[mint]?.price ?? 0;
 
-    return {
-      mint,
-      symbol: token.symbol ?? "UNKNOWN",
-      name: token.name ?? "Unknown Token",
-      decimals: token.decimals ?? 9,
-      logoURI: token.logoURI,
-      price: priceData?.data?.[mint]?.price ?? 0,
-    };
+    // Token is in Jupiter verified list
+    if (tokenRes.ok) {
+      const token = await tokenRes.json();
+      return {
+        mint,
+        symbol: token.symbol ?? "UNKNOWN",
+        name: token.name ?? "Unknown Token",
+        decimals: token.decimals ?? 9,
+        logoURI: token.logoURI,
+        price,
+      };
+    }
+
+    // Fallback: try the broader Jupiter all-tokens endpoint
+    const allTokenRes = await fetchWithTimeout(`https://tokens.jup.ag/tokens?tags=all`).catch(() => null);
+    if (allTokenRes?.ok) {
+      const allTokens: Array<{ address: string; symbol: string; name: string; decimals: number; logoURI?: string }> =
+        await allTokenRes.json();
+      const found = allTokens.find((t) => t.address === mint);
+      if (found) {
+        return {
+          mint,
+          symbol: found.symbol,
+          name: found.name,
+          decimals: found.decimals,
+          logoURI: found.logoURI,
+          price,
+        };
+      }
+    }
+
+    // Last resort: if we have a price, return a minimal token info so the chart still works
+    if (price > 0) {
+      return {
+        mint,
+        symbol: mint.slice(0, 6) + "...",
+        name: "Unknown Token",
+        decimals: 9,
+        price,
+      };
+    }
+
+    return null;
   } catch {
     return null;
   }

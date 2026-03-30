@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { Search, Loader2 } from "lucide-react";
 import Image from "next/image";
 
+const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
 interface TokenResult {
   address: string;
   symbol: string;
@@ -26,7 +28,22 @@ export default function TokenSearch({ onSelect, loading }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (query.length < 2) {
+    const trimmed = query.trim();
+
+    // If it's a valid Solana mint address, skip search and load directly
+    if (SOLANA_MINT_RE.test(trimmed)) {
+      setResults([]);
+      setOpen(false);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        onSelect(trimmed);
+      }, 200);
+      return () => {
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+      };
+    }
+
+    if (trimmed.length < 2) {
       setResults([]);
       setOpen(false);
       return;
@@ -36,7 +53,7 @@ export default function TokenSearch({ onSelect, loading }: Props) {
     debounceRef.current = setTimeout(async () => {
       setSearching(true);
       try {
-        const res = await fetch(`/api/token?q=${encodeURIComponent(query)}`);
+        const res = await fetch(`/api/token?q=${encodeURIComponent(trimmed)}`);
         const data = await res.json();
         setResults(data.tokens ?? []);
         setOpen(true);
@@ -50,7 +67,7 @@ export default function TokenSearch({ onSelect, loading }: Props) {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query]);
+  }, [query, onSelect]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -69,6 +86,18 @@ export default function TokenSearch({ onSelect, loading }: Props) {
     onSelect(token.address);
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      const trimmed = query.trim();
+      if (SOLANA_MINT_RE.test(trimmed)) {
+        setOpen(false);
+        onSelect(trimmed);
+      } else if (results.length > 0) {
+        handleSelect(results[0]);
+      }
+    }
+  };
+
   return (
     <div ref={containerRef} className="relative w-full max-w-xl">
       <div className="flex items-center gap-2 bg-[#1a1f2e] border border-[#2a3142] rounded-lg px-3 py-2.5 focus-within:border-[#f97316] transition-colors">
@@ -81,7 +110,8 @@ export default function TokenSearch({ onSelect, loading }: Props) {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search token symbol, name, or paste mint address..."
+          onKeyDown={handleKeyDown}
+          placeholder="Search symbol / name, or paste mint address..."
           className="flex-1 bg-transparent text-sm text-white placeholder:text-gray-500 outline-none"
           onFocus={() => results.length > 0 && setOpen(true)}
         />
