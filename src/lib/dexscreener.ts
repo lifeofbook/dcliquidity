@@ -92,6 +92,32 @@ function buildPositions(
     return positions;
   }
 
+  if (id.startsWith("pump")) {
+    // Pump.fun / pumpswap AMM: the exact depth requires the bonding curve's
+    // virtualSolReserves & virtualTokenReserves from on-chain state, which is not
+    // available here. Use a symmetric gaussian ±20% as the neutral fallback so
+    // support and resistance bars are equal — consistent with CLOBr's display.
+    const RANGE = 40;
+    const sigma = RANGE / 4; // σ = 10 bins
+    const pumpWeights: number[] = [];
+    for (let i = 0; i < RANGE; i++) {
+      const dist = Math.abs(i - RANGE / 2 + 0.5);
+      pumpWeights.push(Math.exp(-0.5 * Math.pow(dist / sigma, 2)));
+    }
+    const totalPumpWeight = pumpWeights.reduce((s, w) => s + w, 0);
+    for (let i = 0; i < RANGE; i++) {
+      const idx = i - RANGE / 2;
+      const step = 0.01;
+      positions.push({
+        priceLow: tokenPriceUsd * Math.pow(1 + step, idx),
+        priceHigh: tokenPriceUsd * Math.pow(1 + step, idx + 1),
+        liquidityUsd: liquidityUsd * pumpWeights[i] / totalPumpWeight,
+        source,
+      });
+    }
+    return positions;
+  }
+
   if (id.includes("clmm") || id.includes("orca") || isClmmByLabel) {
     // CLMM: concentrated ±20%, heavier near current price
     const RANGE = 40;
@@ -111,9 +137,8 @@ function buildPositions(
     return positions.map(p => ({ ...p, liquidityUsd: p.liquidityUsd / total * liquidityUsd }));
   }
 
-  // AMM / constant product: depth ∝ 1/sqrt(price) — this is the mathematically
-  // correct model for xy=k pools (marginal liquidity in USD at price P is ∝ 1/√P).
-  // Using 1/price was wrong and heavily over-biased support vs resistance.
+  // AMM / constant product: depth ∝ 1/sqrt(price) — mathematically correct for
+  // xy=k pools (marginal USD liquidity at price P is ∝ 1/√P).
   const RANGE = 200;
   const weights: number[] = [];
   for (let i = 0; i < RANGE; i++) {
