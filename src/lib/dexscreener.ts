@@ -107,14 +107,15 @@ function buildPositions(
     return positions.map(p => ({ ...p, liquidityUsd: p.liquidityUsd / total * liquidityUsd }));
   }
 
-  // AMM / constant product: proportional depth — proportional to 1/(relative_price)
-  // More weight near current price, less far away
+  // AMM / constant product: depth ∝ 1/price (amplified from 1/sqrt)
+  // This makes support bars CLEARLY longer than resistance bars
+  // because at lower prices you can buy more tokens with same capital
   const RANGE = 200;
   const weights: number[] = [];
-  for (let i = -RANGE / 2; i < RANGE / 2; i++) {
-    const relPrice = Math.pow(1.01, i + 0.5);
-    // For constant product, depth per price unit ∝ 1/sqrt(relPrice)
-    weights.push(1 / Math.sqrt(relPrice));
+  for (let i = 0; i < RANGE; i++) {
+    const relPrice = Math.pow(1.01, i - RANGE / 2 + 0.5);
+    // Use 1/relPrice instead of 1/sqrt(relPrice) for stronger visual contrast
+    weights.push(1 / relPrice);
   }
   const totalWeight = weights.reduce((s, w) => s + w, 0);
   for (let i = 0; i < RANGE; i++) {

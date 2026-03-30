@@ -192,21 +192,30 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
     liqLinesRef.current = [];
 
     const { buckets, currentPrice } = data;
-    const maxUsd = Math.max(...buckets.map((b) => b.totalUsd), 1);
-    const rangeBuckets = buckets.filter(
-      (b) => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0
-    );
+    const rangeBuckets = buckets
+      .filter((b) => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0)
+      .sort((a, b) => b.totalUsd - a.totalUsd);
 
-    rangeBuckets.forEach((bucket) => {
+    // Only draw lines for levels that have meaningful liquidity (avoid clutter)
+    const threshold = rangeBuckets[0]?.totalUsd ?? 0;
+    const minToShow = threshold * 0.05; // only show levels ≥ 5% of max
+    const maxUsd = threshold || 1;
+
+    const visibleBuckets = rangeBuckets.filter((b) => b.totalUsd >= minToShow);
+
+    visibleBuckets.forEach((bucket) => {
       const dominantSource = Object.entries(bucket.sources).sort(([, a], [, b]) => b - a)[0];
       const color = dominantSource ? (SOURCE_COLORS[dominantSource[0]] ?? "#4b5563") : "#4b5563";
-      const thickness = Math.max(1, Math.round((bucket.totalUsd / maxUsd) * 3));
+      // lineWidth 1-4, stronger levels are thicker
+      const strength = bucket.totalUsd / maxUsd;
+      const thickness = strength > 0.75 ? 4 : strength > 0.45 ? 3 : strength > 0.2 ? 2 : 1;
 
       const line = candleSeriesRef.current.createPriceLine({
         price: bucket.priceMid,
-        color: bucket.index < 0 ? `${color}bb` : `${color}66`,
+        // Support (below price) solid, resistance more transparent
+        color: bucket.index < 0 ? `${color}dd` : `${color}66`,
         lineWidth: thickness,
-        lineStyle: 0,
+        lineStyle: 0, // solid
         axisLabelVisible: false,
         title: "",
       });
