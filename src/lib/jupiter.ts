@@ -32,18 +32,47 @@ export async function getTokenPrice(mint: string): Promise<number> {
 }
 
 export async function getTokenInfo(mint: string): Promise<TokenInfo | null> {
-  try {
-    const [tokenRes, priceRes] = await Promise.all([
-      fetchWithTimeout(`${JUPITER_TOKEN_API}/${mint}`),
-      fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${mint}&vsToken=${USDC_MINT}`),
-    ]);
+  // Run Jupiter token lookup + Jupiter price + DexScreener all in parallel
+  const [tokenRes, priceRes, dexRes] = await Promise.allSettled([
+    fetchWithTimeout(`${JUPITER_TOKEN_API}/${mint}`),
+    fetchWithTimeout(`${JUPITER_PRICE_API}?ids=${mint}&vsToken=${USDC_MINT}`),
+    fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, 12000),
+  ]);
 
-    const priceData = priceRes.ok ? await priceRes.json() : null;
-    const price: number = priceData?.data?.[mint]?.price ?? 0;
+  // Parse Jupiter price
+  let jupPrice = 0;
+  if (priceRes.status === "fulfilled" && priceRes.value.ok) {
+    try {
+      const pd = await priceRes.value.json();
+      jupPrice = pd?.data?.[mint]?.price ?? 0;
+    } catch { /* ignore */ }
+  }
 
-    // Token is in Jupiter verified list
-    if (tokenRes.ok) {
-      const token = await tokenRes.json();
+  // Parse DexScreener response
+  interface DexPair {
+    baseToken: { address: string; symbol: string; name: string };
+    quoteToken: { address: string; symbol: string };
+    priceUsd?: string;
+    liquidity?: { usd?: number };
+    info?: { imageUrl?: string };
+  }
+  let dexPairs: DexPair[] = [];
+  if (dexRes.status === "fulfilled" && dexRes.value.ok) {
+    try {
+      const dd = await dexRes.value.json();
+      dexPairs = (dd?.pairs ?? []) as DexPair[];
+    } catch { /* ignore */ }
+  }
+
+  // Pick best price: Jupiter first, then DexScreener
+  const dexPair = dexPairs.find((p) => p.baseToken.address === mint) ?? dexPairs[0];
+  const dexPrice = dexPair?.priceUsd ? parseFloat(dexPair.priceUsd) : 0;
+  const price = jupPrice > 0 ? jupPrice : dexPrice;
+
+  // 1. Jupiter verified token list
+  if (tokenRes.status === "fulfilled" && tokenRes.value.ok) {
+    try {
+      const token = await tokenRes.value.json();
       return {
         mint,
         symbol: token.symbol ?? "UNKNOWN",
@@ -52,41 +81,35 @@ export async function getTokenInfo(mint: string): Promise<TokenInfo | null> {
         logoURI: token.logoURI,
         price,
       };
-    }
-
-    // Fallback: try the broader Jupiter all-tokens endpoint
-    const allTokenRes = await fetchWithTimeout(`https://tokens.jup.ag/tokens?tags=all`).catch(() => null);
-    if (allTokenRes?.ok) {
-      const allTokens: Array<{ address: string; symbol: string; name: string; decimals: number; logoURI?: string }> =
-        await allTokenRes.json();
-      const found = allTokens.find((t) => t.address === mint);
-      if (found) {
-        return {
-          mint,
-          symbol: found.symbol,
-          name: found.name,
-          decimals: found.decimals,
-          logoURI: found.logoURI,
-          price,
-        };
-      }
-    }
-
-    // Last resort: if we have a price, return a minimal token info so the chart still works
-    if (price > 0) {
-      return {
-        mint,
-        symbol: mint.slice(0, 6) + "...",
-        name: "Unknown Token",
-        decimals: 9,
-        price,
-      };
-    }
-
-    return null;
-  } catch {
-    return null;
+    } catch { /* fall through */ }
   }
+
+  // 2. DexScreener fallback (handles pump.fun and all new tokens)
+  if (dexPair) {
+    const isBase = dexPair.baseToken.address === mint;
+    const tokenMeta = isBase ? dexPair.baseToken : { address: mint, symbol: mint.slice(0, 6), name: "Unknown" };
+    return {
+      mint,
+      symbol: tokenMeta.symbol || mint.slice(0, 6) + "...",
+      name: tokenMeta.name || "Unknown Token",
+      decimals: 9, // Solana default; DexScreener doesn't return decimals
+      logoURI: dexPair.info?.imageUrl,
+      price,
+    };
+  }
+
+  // 3. Last resort: we have a price but no metadata
+  if (price > 0) {
+    return {
+      mint,
+      symbol: mint.slice(0, 6) + "...",
+      name: "Unknown Token",
+      decimals: 9,
+      price,
+    };
+  }
+
+  return null;
 }
 
 export async function getJupiterLimitOrders(
