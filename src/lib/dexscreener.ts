@@ -21,10 +21,12 @@ interface DexScreenerResponse {
 
 function mapDexId(dexId: string): DEXSource {
   const id = (dexId ?? "").toLowerCase();
+  // Check specific DEX names BEFORE "pump" to avoid misclassifying
+  // a Raydium/Orca pool for a pump.fun token as "pumpfun"
   if (id.includes("meteora")) return "meteora";
   if (id.includes("raydium")) return "raydium";
   if (id.includes("orca")) return "orca";
-  if (id.includes("pump")) return "pumpfun";
+  if (id === "pump" || id === "pump-amm" || id.startsWith("pump")) return "pumpfun";
   return "raydium";
 }
 

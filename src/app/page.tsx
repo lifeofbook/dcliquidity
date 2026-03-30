@@ -2,20 +2,20 @@
 
 import { useState, useCallback } from "react";
 import { RefreshCw, AlertCircle, BarChart2, GitBranch } from "lucide-react";
+import dynamic from "next/dynamic";
 import TokenSearch from "@/components/TokenSearch";
 import LiquidityChart from "@/components/LiquidityChart";
-import StatsPanel from "@/components/StatsPanel";
 import type { AggregatedLiquidity } from "@/types";
-import { formatPrice } from "@/lib/aggregator";
 
-// Well-known tokens for quick access
+// Dynamically import PriceChart (uses browser-only lightweight-charts)
+const PriceChart = dynamic(() => import("@/components/PriceChart"), { ssr: false });
+
 const POPULAR_TOKENS = [
   { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
   { symbol: "JUP", mint: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN" },
   { symbol: "BONK", mint: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" },
   { symbol: "WIF", mint: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm" },
   { symbol: "PYTH", mint: "HZ1JovNiVvGrCNiiYWxoK4sBerABMvxCFBLYn3urRiCk" },
-  { symbol: "USDC", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
 ];
 
 type ChartRange = 20 | 50 | 100 | 200;
@@ -53,171 +53,174 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: "#0d1117" }}>
-      {/* Header */}
-      <header className="border-b border-[#21262d] px-4 py-3">
-        <div className="max-w-screen-xl mx-auto flex items-center justify-between gap-4">
+    <div className="h-screen flex flex-col overflow-hidden" style={{ background: "#0d1117" }}>
+      {/* ── Header ── */}
+      <header className="shrink-0 border-b border-[#21262d] px-4 py-2">
+        <div className="flex items-center gap-3">
+          {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
-            <BarChart2 className="w-6 h-6 text-[#f97316]" />
-            <span className="text-white font-bold text-lg tracking-tight">DCLiquidity</span>
-            <span className="hidden sm:inline text-xs text-gray-500 ml-1">Solana DEX Depth</span>
+            <BarChart2 className="w-5 h-5 text-[#f97316]" />
+            <span className="text-white font-bold tracking-tight">DCLiquidity</span>
           </div>
 
-          <TokenSearch onSelect={loadToken} loading={loading} />
+          {/* Token search — grows to fill */}
+          <div className="flex-1 max-w-md">
+            <TokenSearch onSelect={loadToken} loading={loading} />
+          </div>
 
-          <a
-            href="https://github.com/lifeofbook/dcliquidity"
-            target="_blank"
-            rel="noreferrer"
-            className="shrink-0 text-gray-500 hover:text-white transition-colors"
-          >
-            <GitBranch className="w-5 h-5" />
-          </a>
+          {/* Quick token buttons */}
+          <div className="hidden md:flex items-center gap-1 overflow-x-auto">
+            {POPULAR_TOKENS.map((t) => (
+              <button
+                key={t.mint}
+                onClick={() => loadToken(t.mint)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors shrink-0 ${
+                  currentMint === t.mint
+                    ? "bg-[#f97316] border-[#f97316] text-white"
+                    : "border-[#2a3142] text-gray-500 hover:border-[#f97316] hover:text-white"
+                }`}
+              >
+                {t.symbol}
+              </button>
+            ))}
+          </div>
+
+          {/* Range selector (only visible with data) */}
+          {data && (
+            <div className="flex items-center gap-0.5 bg-[#1a1f2e] rounded-lg p-0.5 border border-[#2a3142]">
+              {([20, 50, 100, 200] as ChartRange[]).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setChartRange(r)}
+                  className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                    chartRange === r
+                      ? "bg-[#f97316] text-white"
+                      : "text-gray-500 hover:text-white"
+                  }`}
+                >
+                  ±{r}%
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Refresh + GitHub */}
+          <div className="flex items-center gap-2 shrink-0">
+            {data && (
+              <button
+                onClick={refresh}
+                title="Refresh"
+                className="p-1.5 rounded text-gray-500 hover:text-white transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <a
+              href="https://github.com/lifeofbook/dcliquidity"
+              target="_blank"
+              rel="noreferrer"
+              className="text-gray-600 hover:text-white transition-colors"
+            >
+              <GitBranch className="w-4 h-4" />
+            </a>
+          </div>
         </div>
       </header>
 
-      {/* Quick pick tokens */}
-      <div className="border-b border-[#21262d] px-4 py-2">
-        <div className="max-w-screen-xl mx-auto flex items-center gap-2 overflow-x-auto">
-          <span className="text-xs text-gray-600 shrink-0">Quick:</span>
-          {POPULAR_TOKENS.map((t) => (
-            <button
-              key={t.mint}
-              onClick={() => loadToken(t.mint)}
-              className={`text-xs px-3 py-1 rounded-full border transition-colors shrink-0 ${
-                currentMint === t.mint
-                  ? "bg-[#f97316] border-[#f97316] text-white"
-                  : "border-[#2a3142] text-gray-400 hover:border-[#f97316] hover:text-white"
-              }`}
-            >
-              {t.symbol}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Main content */}
-      <main className="flex-1 px-4 py-6">
-        <div className="max-w-screen-xl mx-auto">
-          {/* Empty state */}
-          {!data && !loading && !error && (
-            <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
-              <BarChart2 className="w-12 h-12 text-[#f97316] opacity-60" />
-              <h1 className="text-xl font-semibold text-white">Solana DEX Liquidity Depth</h1>
-              <p className="text-gray-500 max-w-md text-sm">
-                Search for any Solana token to visualize concentrated liquidity support and resistance
-                levels across Meteora, Raydium, Orca, and Jupiter orders — all aggregated into 1%
-                price buckets.
+      {/* ── Main content ── */}
+      <main className="flex-1 min-h-0 flex">
+        {/* Empty state */}
+        {!data && !loading && !error && (
+          <div className="flex-1 flex flex-col items-center justify-center gap-5 text-center p-8">
+            <BarChart2 className="w-14 h-14 text-[#f97316] opacity-50" />
+            <div>
+              <h1 className="text-xl font-semibold text-white mb-2">
+                Solana DEX Liquidity Depth
+              </h1>
+              <p className="text-gray-500 text-sm max-w-md">
+                Paste any Solana token address or search by name to visualize
+                concentrated liquidity support &amp; resistance levels across
+                Meteora, Raydium, Orca, and Jupiter — aggregated in real time.
               </p>
-              <div className="flex flex-wrap gap-2 justify-center mt-2">
-                {POPULAR_TOKENS.map((t) => (
-                  <button
-                    key={t.mint}
-                    onClick={() => loadToken(t.mint)}
-                    className="px-4 py-2 rounded-lg bg-[#1a1f2e] border border-[#2a3142] text-sm text-gray-300 hover:border-[#f97316] hover:text-white transition-colors"
-                  >
-                    {t.symbol}
-                  </button>
-                ))}
-              </div>
             </div>
-          )}
-
-          {/* Loading skeleton */}
-          {loading && (
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6 animate-pulse">
-              <div className="bg-[#1a1f2e] rounded-xl h-96 border border-[#2a3142]" />
-              <div className="space-y-4">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="bg-[#1a1f2e] rounded-lg h-20 border border-[#2a3142]" />
-                ))}
-              </div>
+            <div className="flex flex-wrap gap-2 justify-center">
+              {POPULAR_TOKENS.map((t) => (
+                <button
+                  key={t.mint}
+                  onClick={() => loadToken(t.mint)}
+                  className="px-4 py-2 rounded-lg bg-[#1a1f2e] border border-[#2a3142] text-sm text-gray-300 hover:border-[#f97316] hover:text-white transition-colors"
+                >
+                  {t.symbol}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Error state */}
-          {error && !loading && (
-            <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <AlertCircle className="w-8 h-8 text-red-400" />
-              <p className="text-red-400 font-medium">{error}</p>
-              <button
-                onClick={refresh}
-                className="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> Try again
-              </button>
+        {/* Loading skeleton */}
+        {loading && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-8 h-8 border-2 border-[#f97316] border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-gray-500">Fetching liquidity data…</p>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Main chart layout */}
-          {data && !loading && (
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
-              {/* Chart panel */}
-              <div className="bg-[#13171f] rounded-xl border border-[#21262d] p-5 overflow-y-auto max-h-[85vh]">
-                {/* Chart toolbar */}
-                <div className="flex items-center justify-between mb-5">
-                  <div>
-                    <h2 className="text-white font-semibold text-sm">
-                      {data.token.symbol} — Liquidity Depth
-                    </h2>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {formatPrice(data.currentPrice)} · aggregated across all DEXes
-                    </p>
-                  </div>
+        {/* Error state */}
+        {error && !loading && (
+          <div className="flex-1 flex flex-col items-center justify-center gap-3">
+            <AlertCircle className="w-8 h-8 text-red-400" />
+            <p className="text-red-400 font-medium">{error}</p>
+            <button
+              onClick={refresh}
+              className="text-sm text-gray-400 hover:text-white flex items-center gap-1"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Try again
+            </button>
+          </div>
+        )}
 
-                  <div className="flex items-center gap-2">
-                    {/* Range selector */}
-                    <div className="flex items-center gap-1 bg-[#1a1f2e] rounded-lg p-1 border border-[#2a3142]">
-                      {([20, 50, 100, 200] as ChartRange[]).map((r) => (
-                        <button
-                          key={r}
-                          onClick={() => setChartRange(r)}
-                          className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                            chartRange === r
-                              ? "bg-[#f97316] text-white"
-                              : "text-gray-400 hover:text-white"
-                          }`}
-                        >
-                          ±{r}%
-                        </button>
-                      ))}
-                    </div>
+        {/* ── CLOBr-style dual panel ── */}
+        {data && !loading && (
+          <div className="flex-1 min-h-0 flex">
+            {/* Left: TradingView candlestick chart */}
+            <div
+              className="flex-1 min-w-0 border-r border-[#21262d]"
+              style={{ background: "#0d1117" }}
+            >
+              <PriceChart
+                mint={currentMint!}
+                data={data}
+                showRange={chartRange}
+              />
+            </div>
 
-                    {/* Refresh */}
-                    <button
-                      onClick={refresh}
-                      title="Refresh data"
-                      className="p-2 rounded-lg bg-[#1a1f2e] border border-[#2a3142] text-gray-400 hover:text-white hover:border-[#f97316] transition-colors"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+            {/* Right: Liquidity depth panel */}
+            <div
+              className="shrink-0 flex flex-col"
+              style={{ width: "340px", background: "#0d1117" }}
+            >
+              {/* Panel header */}
+              <div className="shrink-0 px-3 py-2 border-b border-[#21262d]">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400 font-medium">
+                    Liquidity Depth
+                  </span>
+                  <span className="text-[10px] text-gray-600">
+                    ±{chartRange}% range
+                  </span>
                 </div>
-
-                <LiquidityChart data={data} showRange={chartRange} />
-
-                {/* Last updated */}
-                <p className="text-xs text-gray-600 mt-3 text-right">
-                  Last updated: {new Date(data.fetchedAt).toLocaleTimeString()}
-                </p>
               </div>
 
-              {/* Stats panel */}
-              <div>
-                <StatsPanel data={data} />
+              {/* Depth chart fills remaining height */}
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <LiquidityChart data={data} showRange={chartRange} />
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </main>
-
-      {/* Footer */}
-      <footer className="border-t border-[#21262d] px-4 py-3">
-        <div className="max-w-screen-xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
-          <span>DCLiquidity — Solana concentrated liquidity aggregator</span>
-          <span>Data: Meteora · Raydium · Orca · Jupiter Limit &amp; DCA</span>
-        </div>
-      </footer>
     </div>
   );
 }

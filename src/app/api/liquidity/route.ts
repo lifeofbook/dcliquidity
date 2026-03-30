@@ -52,37 +52,38 @@ export async function GET(request: NextRequest) {
 
     const dexPositions =
       dexscreenerPositions.status === "fulfilled" ? dexscreenerPositions.value : [];
-    const nativePositions: LiquidityPosition[] = [
-      ...(meteoraPositions.status === "fulfilled" ? meteoraPositions.value : []),
-      ...(raydiumPositions.status === "fulfilled" ? raydiumPositions.value : []),
-      ...(orcaPositions.status === "fulfilled" ? orcaPositions.value : []),
-    ];
+    const meteoraPos = meteoraPositions.status === "fulfilled" ? meteoraPositions.value : [];
+    const raydiumPos = raydiumPositions.status === "fulfilled" ? raydiumPositions.value : [];
+    const orcaPos = orcaPositions.status === "fulfilled" ? orcaPositions.value : [];
     const orderPositions: LiquidityPosition[] = [
       ...(limitOrderPositions.status === "fulfilled" ? limitOrderPositions.value : []),
       ...(dcaPositions.status === "fulfilled" ? dcaPositions.value : []),
     ];
 
-    // Merge: if native DEX APIs returned positions, prefer those (more precise).
-    // Otherwise fall back to DexScreener pool data.
-    const nativeLiquidityUsd = nativePositions.reduce((s, p) => s + p.liquidityUsd, 0);
-    const dexLiquidityUsd = dexPositions.reduce((s, p) => s + p.liquidityUsd, 0);
+    // Strategy: use native API data for each DEX when available (more accurate),
+    // and supplement with DexScreener for any sources the native APIs missed.
+    const meteoraUsd = meteoraPos.reduce((s, p) => s + p.liquidityUsd, 0);
+    const raydiumUsd = raydiumPos.reduce((s, p) => s + p.liquidityUsd, 0);
+    const orcaUsd = orcaPos.reduce((s, p) => s + p.liquidityUsd, 0);
 
-    let poolPositions: LiquidityPosition[];
-    if (nativeLiquidityUsd > 0) {
-      poolPositions = nativePositions;
-    } else {
-      // Native APIs returned nothing — use DexScreener as fallback
-      poolPositions = dexPositions;
-    }
+    // Only pull DexScreener positions for sources the native APIs didn't cover
+    const dexScreenerFill = dexPositions.filter((p) => {
+      if (p.source === "meteora" && meteoraUsd > 0) return false;
+      if (p.source === "raydium" && raydiumUsd > 0) return false;
+      if (p.source === "orca" && orcaUsd > 0) return false;
+      return true;
+    });
 
-    const allPositions: LiquidityPosition[] = [...poolPositions, ...orderPositions];
+    const allPositions: LiquidityPosition[] = [
+      ...meteoraPos,
+      ...raydiumPos,
+      ...orcaPos,
+      ...dexScreenerFill,
+      ...orderPositions,
+    ];
 
     // 3. Aggregate into 1% price buckets
     const result = aggregateLiquidity(token, currentPrice, allPositions);
-
-    // Expose which source was used
-    (result as typeof result & { dataSource: string }).dataSource =
-      nativeLiquidityUsd > 0 ? "native" : "dexscreener";
 
     return NextResponse.json(result, {
       headers: {
