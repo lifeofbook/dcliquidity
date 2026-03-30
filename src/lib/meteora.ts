@@ -76,15 +76,19 @@ export async function getMeteoraLiquidity(
     const halfInner = 10;
     const halfOuter = 50;
 
-    // Inner: 70% of TVL in ±halfInner bins
+    // Inner: 70% of TVL in ±halfInner bins (gaussian, normalized)
     const innerUsd = tvlUsd * 0.70;
+    const innerWeights: number[] = [];
     for (let i = -halfInner; i < halfInner; i++) {
       const dist = Math.abs(i + 0.5);
-      const weight = Math.exp(-0.5 * Math.pow(dist / (halfInner / 2.5), 2));
+      innerWeights.push(Math.exp(-0.5 * Math.pow(dist / (halfInner / 2.5), 2)));
+    }
+    const totalInnerWeight = innerWeights.reduce((s, w) => s + w, 0);
+    for (let i = -halfInner; i < halfInner; i++) {
       positions.push({
         priceLow: tokenPriceUsd * Math.pow(1 + stepFraction, i),
         priceHigh: tokenPriceUsd * Math.pow(1 + stepFraction, i + 1),
-        liquidityUsd: innerUsd * weight,
+        liquidityUsd: innerUsd * innerWeights[i + halfInner] / totalInnerWeight,
         source: "meteora",
       });
     }

@@ -39,9 +39,13 @@ function buildPositions(
   dexId: string,
   source: DEXSource,
   liquidityUsd: number,
-  tokenPriceUsd: number
+  tokenPriceUsd: number,
+  labels?: string[]
 ): LiquidityPosition[] {
   const id = (dexId ?? "").toLowerCase();
+  const lbls = (labels ?? []).map(l => l.toLowerCase());
+  // Detect CLMM from dexId or pool labels (e.g. Raydium CLMM has label "CLMM" or "v3")
+  const isClmmByLabel = lbls.some(l => ["clmm", "v3", "concentrated"].includes(l));
   const positions: LiquidityPosition[] = [];
 
   if (id.includes("meteora") || id.includes("dlmm")) {
@@ -88,7 +92,7 @@ function buildPositions(
     return positions;
   }
 
-  if (id.includes("clmm") || id.includes("orca")) {
+  if (id.includes("clmm") || id.includes("orca") || isClmmByLabel) {
     // CLMM: concentrated ±20%, heavier near current price
     const RANGE = 40;
     for (let i = -RANGE / 2; i < RANGE / 2; i++) {
@@ -107,15 +111,14 @@ function buildPositions(
     return positions.map(p => ({ ...p, liquidityUsd: p.liquidityUsd / total * liquidityUsd }));
   }
 
-  // AMM / constant product: depth ∝ 1/price (amplified from 1/sqrt)
-  // This makes support bars CLEARLY longer than resistance bars
-  // because at lower prices you can buy more tokens with same capital
+  // AMM / constant product: depth ∝ 1/sqrt(price) — this is the mathematically
+  // correct model for xy=k pools (marginal liquidity in USD at price P is ∝ 1/√P).
+  // Using 1/price was wrong and heavily over-biased support vs resistance.
   const RANGE = 200;
   const weights: number[] = [];
   for (let i = 0; i < RANGE; i++) {
     const relPrice = Math.pow(1.01, i - RANGE / 2 + 0.5);
-    // Use 1/relPrice instead of 1/sqrt(relPrice) for stronger visual contrast
-    weights.push(1 / relPrice);
+    weights.push(1 / Math.sqrt(relPrice));
   }
   const totalWeight = weights.reduce((s, w) => s + w, 0);
   for (let i = 0; i < RANGE; i++) {
@@ -152,7 +155,7 @@ export async function getDexScreenerLiquidity(
       const liquidityUsd = pair.liquidity?.usd ?? 0;
       if (liquidityUsd <= 0) continue;
       const source = mapDexId(pair.dexId);
-      const built = buildPositions(pair.dexId, source, liquidityUsd, tokenPriceUsd);
+      const built = buildPositions(pair.dexId, source, liquidityUsd, tokenPriceUsd, pair.labels);
       positions.push(...built);
     }
 

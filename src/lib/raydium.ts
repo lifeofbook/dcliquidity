@@ -81,13 +81,13 @@ export async function getRaydiumLiquidity(
         });
       }
     } else {
-      // Standard AMM (constant product): depth ∝ 1/price across ±100%
-      // Support bars are clearly longer than resistance bars
+      // Standard AMM (constant product): depth ∝ 1/sqrt(price) across ±100%
+      // Correct model for xy=k: marginal USD liquidity at price P ∝ 1/√P
       const RANGE = 200;
       const weights: number[] = [];
       for (let i = 0; i < RANGE; i++) {
         const relPrice = Math.pow(1.01, i - RANGE / 2 + 0.5);
-        weights.push(1 / relPrice);
+        weights.push(1 / Math.sqrt(relPrice));
       }
       const totalWeight = weights.reduce((s, w) => s + w, 0);
       for (let i = 0; i < RANGE; i++) {
