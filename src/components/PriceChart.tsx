@@ -47,60 +47,51 @@ class DepthBarsRenderer {
     if (!this._data || !this._series) return;
     const { buckets, currentPrice, showRange } = this._data;
 
-    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio, verticalPixelRatio }) => {
-      const W = bitmapSize.width;
-      const H = bitmapSize.height;
+    // useBitmapCoordinateSpace sets transform=scale(dpr,dpr) so coordinates
+    // are still in CSS/media pixels — use mediaSize for boundaries, and use
+    // priceToCoordinate() result directly (it already returns media pixels).
+    target.useBitmapCoordinateSpace(({ context: ctx, mediaSize }) => {
+      const W = mediaSize.width;   // CSS-pixel width of the pane
+      const H = mediaSize.height;  // CSS-pixel height of the pane
 
       const visible = buckets.filter(b => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0);
       if (visible.length === 0) return;
 
       const maxUsd = Math.max(...visible.map(b => b.totalUsd), 1);
-      // Bars occupy up to 22% of pane width, minimum 60px
-      const MAX_BAR_W = Math.max(60 * horizontalPixelRatio, W * 0.22);
-      const BAR_H      = Math.max(2, Math.round(3 * verticalPixelRatio));
-      const CURR_BAR_H = Math.max(3, Math.round(5 * verticalPixelRatio));
+      const MAX_BAR_W = Math.max(60, W * 0.22); // 22% of chart width, min 60px
+      const BAR_H      = 3; // CSS pixels — DPR transform makes it crisp
+      const CURR_BAR_H = 5;
 
       for (const bucket of visible) {
-        // priceToCoordinate returns CSS-pixel (media) Y from top of pane
-        const mediaY = this._series.priceToCoordinate(bucket.priceMid) as number | null;
-        if (mediaY === null || mediaY === undefined) continue;
-        const y = Math.round(mediaY * verticalPixelRatio);
-        if (y < 0 || y > H) continue;
+        // priceToCoordinate → CSS pixels from top of pane (media coords)
+        const y = this._series.priceToCoordinate(bucket.priceMid) as number | null;
+        if (y === null || y === undefined || y < 0 || y > H) continue;
 
         const isCurrent = bucket.index === 0;
         const isSupport = bucket.index < 0;
         const barW = Math.max(1, (bucket.totalUsd / maxUsd) * MAX_BAR_W);
         const barH = isCurrent ? CURR_BAR_H : BAR_H;
 
-        // CLOBr color scheme: grey for support, orange for resistance
-        if (isCurrent) {
-          ctx.fillStyle = "rgba(250, 204, 21, 0.9)";
-        } else if (isSupport) {
-          ctx.fillStyle = "rgba(148, 163, 184, 0.85)"; // slate grey
-        } else {
-          ctx.fillStyle = "rgba(249, 115, 22, 0.75)";  // orange
-        }
+        if (isCurrent)       ctx.fillStyle = "rgba(250,204,21,0.9)";
+        else if (isSupport)  ctx.fillStyle = "rgba(148,163,184,0.85)"; // grey
+        else                 ctx.fillStyle = "rgba(249,115,22,0.75)";  // orange
 
-        // Bars extend from right edge leftward
-        ctx.fillRect(W - barW, y - Math.floor(barH / 2), barW, barH);
+        ctx.fillRect(W - barW, Math.round(y) - Math.floor(barH / 2), barW, barH);
       }
 
-      // Yellow dashed current-price line
-      const mediaCurrY = this._series.priceToCoordinate(currentPrice) as number | null;
-      if (mediaCurrY !== null && mediaCurrY !== undefined) {
-        const currY = Math.round(mediaCurrY * verticalPixelRatio);
-        if (currY >= 0 && currY <= H) {
-          ctx.globalAlpha = 0.7;
-          ctx.strokeStyle = "#facc15";
-          ctx.lineWidth   = Math.round(verticalPixelRatio);
-          ctx.setLineDash([5 * horizontalPixelRatio, 4 * horizontalPixelRatio]);
-          ctx.beginPath();
-          ctx.moveTo(0, currY);
-          ctx.lineTo(W, currY);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.globalAlpha = 1;
-        }
+      // Yellow dashed current-price horizontal line
+      const currY = this._series.priceToCoordinate(currentPrice) as number | null;
+      if (currY !== null && currY !== undefined && currY >= 0 && currY <= H) {
+        ctx.globalAlpha = 0.7;
+        ctx.strokeStyle = "#facc15";
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, Math.round(currY));
+        ctx.lineTo(W, Math.round(currY));
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
       }
     });
   }
