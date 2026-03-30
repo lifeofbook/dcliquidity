@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react"; // useCallback used by fetchCandles
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { AggregatedLiquidity } from "@/types";
 import { formatPrice, formatUsd } from "@/lib/aggregator";
 
@@ -37,8 +37,25 @@ const SOURCE_COLORS: Record<string, string> = {
   pumpfun: "#ec4899",
 };
 
+const SOURCE_LABELS: Record<string, string> = {
+  meteora: "Meteora",
+  raydium: "Raydium",
+  orca: "Orca",
+  jupiterLimit: "Jup Limit",
+  jupiterDca: "Jup DCA",
+  pumpfun: "Pump.fun",
+};
+
+function hexToRgb(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return [r, g, b];
+}
+
 export default function PriceChart({ mint, data, showRange = 20 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,7 +67,83 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch OHLCV data
+  // ── Draw depth bars on canvas ──────────────────────────────────────────────
+  const drawDepth = useCallback(() => {
+    const canvas = canvasRef.current;
+    const series = candleSeriesRef.current;
+    if (!canvas || !series || !data) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+    if (W === 0 || H === 0) return;
+
+    // Resize canvas buffer if needed
+    if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+    }
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const { buckets, currentPrice } = data;
+    const visible = buckets.filter(
+      (b) => b.index >= -showRange && b.index <= showRange
+    );
+    const maxUsd = Math.max(...visible.map((b) => b.totalUsd), 1);
+
+    // Max bar width: 22% of chart width, at least 60px
+    const MAX_BAR_W = Math.max(60, W * 0.22);
+
+    for (const bucket of visible) {
+      if (bucket.totalUsd <= 0) continue;
+
+      const y = series.priceToCoordinate(bucket.priceMid);
+      if (y === null || y < 0 || y > H) continue;
+
+      const isCurrent = bucket.index === 0;
+      const isSupport = bucket.index < 0;
+      const barW = (bucket.totalUsd / maxUsd) * MAX_BAR_W;
+
+      // Bar height: thicker at current price, support slightly thicker than resistance
+      const barH = isCurrent ? 4 : isSupport ? 3 : 2;
+
+      // Dominant source color
+      const dominant = Object.entries(bucket.sources)
+        .filter(([, v]) => v > 0)
+        .sort(([, a], [, b]) => b - a)[0];
+
+      const colorHex = dominant ? (SOURCE_COLORS[dominant[0]] ?? "#6b7280") : "#6b7280";
+      const [r, g, b2] = hexToRgb(colorHex);
+
+      // Support bars are bright/solid, resistance are faded
+      const alpha = isCurrent ? 1 : isSupport ? 0.82 : 0.35;
+
+      ctx.fillStyle = `rgba(${r},${g},${b2},${alpha})`;
+      // Draw from RIGHT edge extending LEFT
+      ctx.fillRect(W - barW, y - barH / 2, barW, barH);
+    }
+
+    // Current price dashed line across full chart width
+    const currentY = series.priceToCoordinate(currentPrice);
+    if (currentY !== null && currentY >= 0 && currentY <= H) {
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.8;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, currentY);
+      ctx.lineTo(W, currentY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+  }, [data, showRange]);
+
+  // ── Fetch OHLCV ───────────────────────────────────────────────────────────
   const fetchCandles = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -74,67 +167,71 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
     fetchCandles();
   }, [fetchCandles]);
 
-  // Init chart
+  // ── Init lightweight-charts ───────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
-    let chart: ReturnType<typeof import("lightweight-charts")["createChart"]>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let chart: any;
 
-    import("lightweight-charts").then(({ createChart, CandlestickSeries, HistogramSeries, ColorType }) => {
-      if (!containerRef.current) return;
+    import("lightweight-charts").then(
+      ({ createChart, CandlestickSeries, HistogramSeries, ColorType }) => {
+        if (!containerRef.current) return;
 
-      chart = createChart(containerRef.current, {
-        layout: {
-          background: { type: ColorType.Solid, color: "#0d1117" },
-          textColor: "#6b7280",
-          fontFamily: "ui-monospace, 'Courier New', monospace",
-        },
-        grid: {
-          vertLines: { color: "#21262d" },
-          horzLines: { color: "#21262d" },
-        },
-        crosshair: {
-          vertLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
-          horzLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
-        },
-        rightPriceScale: {
-          borderColor: "#21262d",
-          textColor: "#6b7280",
-          scaleMargins: { top: 0.1, bottom: 0.25 },
-        },
-        timeScale: {
-          borderColor: "#21262d",
-          timeVisible: true,
-          secondsVisible: false,
-          barSpacing: 8,
-        },
-        width: containerRef.current.clientWidth,
-        height: containerRef.current.clientHeight,
-      });
+        chart = createChart(containerRef.current, {
+          layout: {
+            background: { type: ColorType.Solid, color: "#0d1117" },
+            textColor: "#6b7280",
+            fontFamily: "ui-monospace, 'Courier New', monospace",
+          },
+          grid: {
+            vertLines: { color: "#1a2030" },
+            horzLines: { color: "#1a2030" },
+          },
+          crosshair: {
+            vertLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
+            horzLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
+          },
+          rightPriceScale: {
+            borderColor: "#21262d",
+            textColor: "#6b7280",
+            scaleMargins: { top: 0.08, bottom: 0.22 },
+          },
+          timeScale: {
+            borderColor: "#21262d",
+            timeVisible: true,
+            secondsVisible: false,
+            barSpacing: 8,
+          },
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
 
-      const candleSeries = chart.addSeries(CandlestickSeries, {
-        upColor: "#22c55e",
-        downColor: "#ef4444",
-        borderUpColor: "#22c55e",
-        borderDownColor: "#ef4444",
-        wickUpColor: "#22c55e",
-        wickDownColor: "#ef4444",
-      });
+        const candleSeries = chart.addSeries(CandlestickSeries, {
+          upColor: "#22c55e",
+          downColor: "#ef4444",
+          borderUpColor: "#22c55e",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#22c55e",
+          wickDownColor: "#ef4444",
+        });
 
-      const volumeSeries = chart.addSeries(HistogramSeries, {
-        color: "#22c55e",
-        priceFormat: { type: "volume" },
-        priceScaleId: "vol",
-      });
-      chart.priceScale("vol").applyOptions({
-        scaleMargins: { top: 0.8, bottom: 0 },
-      });
+        const volumeSeries = chart.addSeries(HistogramSeries, {
+          priceFormat: { type: "volume" },
+          priceScaleId: "vol",
+        });
+        chart.priceScale("vol").applyOptions({
+          scaleMargins: { top: 0.8, bottom: 0 },
+        });
 
-      chartRef.current = chart;
-      candleSeriesRef.current = candleSeries;
-      volumeSeriesRef.current = volumeSeries;
+        chartRef.current = chart;
+        candleSeriesRef.current = candleSeries;
+        volumeSeriesRef.current = volumeSeries;
 
-      // (price range sync hook placeholder — subscribeVisibleLogicalRangeChange)
-    });
+        // Redraw depth canvas whenever chart scrolls or zooms
+        chart.timeScale().subscribeVisibleLogicalRangeChange(drawDepth);
+        chart.subscribeCrosshairMove(drawDepth);
+      }
+    );
 
     const handleResize = () => {
       if (chartRef.current && containerRef.current) {
@@ -142,6 +239,7 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
           width: containerRef.current.clientWidth,
           height: containerRef.current.clientHeight,
         });
+        requestAnimationFrame(drawDepth);
       }
     };
     window.addEventListener("resize", handleResize);
@@ -153,10 +251,10 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update candle data when candles change
+  // ── Load candle data ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!candleSeriesRef.current || !volumeSeriesRef.current || candles.length === 0) return;
 
@@ -167,7 +265,6 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
       low: c.low,
       close: c.close,
     }));
-
     const volumeData = candles.map((c) => ({
       time: c.time as import("lightweight-charts").UTCTimestamp,
       value: c.volume,
@@ -177,111 +274,71 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
     candleSeriesRef.current.setData(candleData);
     volumeSeriesRef.current.setData(volumeData);
     chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+    // Redraw depth after candles load
+    requestAnimationFrame(drawDepth);
+  }, [candles, drawDepth]);
 
-  // Draw/redraw liquidity overlay whenever data changes
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const liqLinesRef = useRef<any[]>([]);
+  // ── Redraw depth when data/range changes ─────────────────────────────────
   useEffect(() => {
-    if (!candleSeriesRef.current || !data) return;
+    requestAnimationFrame(drawDepth);
+  }, [drawDepth]);
 
-    // Remove old lines
-    liqLinesRef.current.forEach((line) => {
-      try { candleSeriesRef.current?.removePriceLine(line); } catch { /* ignore */ }
-    });
-    liqLinesRef.current = [];
-
-    const { buckets, currentPrice } = data;
-    const rangeBuckets = buckets
-      .filter((b) => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0)
-      .sort((a, b) => b.totalUsd - a.totalUsd);
-
-    // Only draw lines for levels that have meaningful liquidity (avoid clutter)
-    const threshold = rangeBuckets[0]?.totalUsd ?? 0;
-    const minToShow = threshold * 0.05; // only show levels ≥ 5% of max
-    const maxUsd = threshold || 1;
-
-    const visibleBuckets = rangeBuckets.filter((b) => b.totalUsd >= minToShow);
-
-    visibleBuckets.forEach((bucket) => {
-      const dominantSource = Object.entries(bucket.sources).sort(([, a], [, b]) => b - a)[0];
-      const color = dominantSource ? (SOURCE_COLORS[dominantSource[0]] ?? "#4b5563") : "#4b5563";
-      // lineWidth 1-4, stronger levels are thicker
-      const strength = bucket.totalUsd / maxUsd;
-      const thickness = strength > 0.75 ? 4 : strength > 0.45 ? 3 : strength > 0.2 ? 2 : 1;
-
-      const line = candleSeriesRef.current.createPriceLine({
-        price: bucket.priceMid,
-        // Support (below price) solid, resistance more transparent
-        color: bucket.index < 0 ? `${color}dd` : `${color}66`,
-        lineWidth: thickness,
-        lineStyle: 0, // solid
-        axisLabelVisible: false,
-        title: "",
-      });
-      liqLinesRef.current.push(line);
-    });
-
-    // Current price
-    const currLine = candleSeriesRef.current.createPriceLine({
-      price: currentPrice,
-      color: "#facc15",
-      lineWidth: 1,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: formatPrice(currentPrice),
-    });
-    liqLinesRef.current.push(currLine);
-  }, [data, showRange]);
+  const activeSources = Object.entries(SOURCE_COLORS).filter(
+    ([src]) => (data.sourceBreakdown[src as keyof typeof data.sourceBreakdown] ?? 0) > 0
+  );
 
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#21262d] shrink-0">
-        <div className="flex items-center gap-1">
+      <div
+        className="shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-[#1a2030]"
+        style={{ background: "#0d1117" }}
+      >
+        <div className="flex items-center gap-0.5">
           {RESOLUTIONS.map((r) => (
             <button
               key={r.value}
               onClick={() => setResolution(r.value)}
-              className={`text-xs px-2.5 py-1 rounded transition-colors font-mono ${
+              className={`text-[11px] px-2 py-0.5 rounded transition-colors font-mono ${
                 resolution === r.value
                   ? "bg-[#f97316] text-white"
-                  : "text-gray-500 hover:text-white hover:bg-[#1f2937]"
+                  : "text-gray-600 hover:text-white hover:bg-[#1f2937]"
               }`}
             >
               {r.label}
             </button>
           ))}
         </div>
-        <div className="text-[11px] text-gray-600 font-mono">
+        <div className="text-[10px] text-gray-600 font-mono">
           {data.token.symbol}/USD · {formatPrice(data.currentPrice)}
         </div>
       </div>
 
-      {/* Chart area */}
+      {/* Chart + depth canvas overlay */}
       <div className="relative flex-1 min-h-0">
-        {/* Lightweight Charts container */}
-        <div ref={containerRef} className="w-full h-full" />
+        {/* lightweight-charts fills the container */}
+        <div ref={containerRef} className="absolute inset-0" />
 
-        {/* Loading overlay */}
+        {/* Canvas overlay: depth bars drawn here (pointer-events: none) */}
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 w-full h-full"
+          style={{ pointerEvents: "none" }}
+        />
+
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-[#0d1117]/80 z-10">
             <div className="flex flex-col items-center gap-2">
-              <div className="w-6 h-6 border-2 border-[#f97316] border-t-transparent rounded-full animate-spin" />
+              <div className="w-5 h-5 border-2 border-[#f97316] border-t-transparent rounded-full animate-spin" />
               <span className="text-xs text-gray-500">Loading chart…</span>
             </div>
           </div>
         )}
-
-        {/* Error overlay */}
         {error && !loading && (
           <div className="absolute inset-0 flex items-center justify-center z-10">
             <div className="text-center">
               <p className="text-gray-500 text-sm mb-2">{error}</p>
-              <button
-                onClick={fetchCandles}
-                className="text-xs text-[#f97316] hover:underline"
-              >
+              <button onClick={fetchCandles} className="text-xs text-[#f97316] hover:underline">
                 Retry
               </button>
             </div>
@@ -289,20 +346,19 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
         )}
       </div>
 
-      {/* Mini legend */}
-      <div className="flex items-center gap-3 px-3 py-1.5 border-t border-[#21262d] shrink-0 flex-wrap">
-        <span className="text-[10px] text-gray-600">Liquidity overlay:</span>
-        {Object.entries(SOURCE_COLORS).map(([src, color]) => {
-          const total = data.sourceBreakdown[src as keyof typeof data.sourceBreakdown];
-          if (!total || total <= 0) return null;
+      {/* Legend strip */}
+      <div
+        className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-0.5 px-3 py-1 border-t border-[#1a2030]"
+        style={{ background: "#090c12" }}
+      >
+        <span className="text-[9px] text-gray-700">Liquidity overlay:</span>
+        {activeSources.map(([src, color]) => {
+          const total = data.sourceBreakdown[src as keyof typeof data.sourceBreakdown] ?? 0;
           return (
-            <div key={src} className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
-              <span className="text-[10px] text-gray-500 capitalize">
-                {src === "jupiterLimit" ? "Jup Limit" : src === "jupiterDca" ? "Jup DCA" : src === "pumpfun" ? "Pump.fun" : src.charAt(0).toUpperCase() + src.slice(1)}
-                {" "}<span className="text-gray-600">({formatUsd(total)})</span>
-              </span>
-            </div>
+            <span key={src} className="flex items-center gap-1 text-[10px] text-gray-500">
+              <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: color }} />
+              {SOURCE_LABELS[src]} ({formatUsd(total)})
+            </span>
           );
         })}
       </div>
