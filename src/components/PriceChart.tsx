@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { AggregatedLiquidity } from "@/types";
+import type { AggregatedLiquidity, LiquidityBucket } from "@/types";
 import { formatPrice, formatUsd } from "@/lib/aggregator";
+import type { CanvasRenderingTarget2D } from "fancy-canvas";
 
 interface Candle {
   time: number; open: number; high: number; low: number; close: number; volume: number;
@@ -28,116 +29,133 @@ const SOURCE_LABELS: Record<string, string> = {
   jupiterLimit: "Jup Limit", jupiterDca: "Jup DCA", pumpfun: "Pump.fun",
 };
 
-function hexToRgb(hex: string): [number, number, number] {
-  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+// ── Depth bars — lightweight-charts v5 series primitive ────────────────────
+// Draws directly inside the chart render pipeline: no z-index fights,
+// priceToCoordinate() is always valid when draw() fires.
+
+interface DepthPluginData {
+  buckets: LiquidityBucket[];
+  currentPrice: number;
+  showRange: number;
 }
 
-export default function PriceChart({ mint, data, showRange = 20 }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef    = useRef<HTMLCanvasElement>(null);
+class DepthBarsRenderer {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const chartRef       = useRef<any>(null);
+  constructor(private _data: DepthPluginData | null, private _series: any) {}
+
+  draw(target: CanvasRenderingTarget2D): void {
+    if (!this._data || !this._series) return;
+    const { buckets, currentPrice, showRange } = this._data;
+
+    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio, verticalPixelRatio }) => {
+      const W = bitmapSize.width;
+      const H = bitmapSize.height;
+
+      const visible = buckets.filter(b => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0);
+      if (visible.length === 0) return;
+
+      const maxUsd = Math.max(...visible.map(b => b.totalUsd), 1);
+      // Bars occupy up to 22% of pane width, minimum 60px
+      const MAX_BAR_W = Math.max(60 * horizontalPixelRatio, W * 0.22);
+      const BAR_H      = Math.max(2, Math.round(3 * verticalPixelRatio));
+      const CURR_BAR_H = Math.max(3, Math.round(5 * verticalPixelRatio));
+
+      for (const bucket of visible) {
+        // priceToCoordinate returns CSS-pixel (media) Y from top of pane
+        const mediaY = this._series.priceToCoordinate(bucket.priceMid) as number | null;
+        if (mediaY === null || mediaY === undefined) continue;
+        const y = Math.round(mediaY * verticalPixelRatio);
+        if (y < 0 || y > H) continue;
+
+        const isCurrent = bucket.index === 0;
+        const isSupport = bucket.index < 0;
+        const barW = Math.max(1, (bucket.totalUsd / maxUsd) * MAX_BAR_W);
+        const barH = isCurrent ? CURR_BAR_H : BAR_H;
+
+        // CLOBr color scheme: grey for support, orange for resistance
+        if (isCurrent) {
+          ctx.fillStyle = "rgba(250, 204, 21, 0.9)";
+        } else if (isSupport) {
+          ctx.fillStyle = "rgba(148, 163, 184, 0.85)"; // slate grey
+        } else {
+          ctx.fillStyle = "rgba(249, 115, 22, 0.75)";  // orange
+        }
+
+        // Bars extend from right edge leftward
+        ctx.fillRect(W - barW, y - Math.floor(barH / 2), barW, barH);
+      }
+
+      // Yellow dashed current-price line
+      const mediaCurrY = this._series.priceToCoordinate(currentPrice) as number | null;
+      if (mediaCurrY !== null && mediaCurrY !== undefined) {
+        const currY = Math.round(mediaCurrY * verticalPixelRatio);
+        if (currY >= 0 && currY <= H) {
+          ctx.globalAlpha = 0.7;
+          ctx.strokeStyle = "#facc15";
+          ctx.lineWidth   = Math.round(verticalPixelRatio);
+          ctx.setLineDash([5 * horizontalPixelRatio, 4 * horizontalPixelRatio]);
+          ctx.beginPath();
+          ctx.moveTo(0, currY);
+          ctx.lineTo(W, currY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
+      }
+    });
+  }
+}
+
+class DepthBarsPlugin {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _series: any = null;
+  private _requestUpdate: (() => void) | null = null;
+  private _data: DepthPluginData | null = null;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  attached(param: { series: any; requestUpdate: () => void }) {
+    this._series = param.series;
+    this._requestUpdate = param.requestUpdate;
+  }
+  detached() {
+    this._series = null;
+    this._requestUpdate = null;
+  }
+
+  setData(data: DepthPluginData) {
+    this._data = data;
+    this._requestUpdate?.();
+  }
+
+  paneViews() {
+    const renderer = new DepthBarsRenderer(this._data, this._series);
+    return [{
+      zOrder: () => "top" as const,
+      renderer: () => renderer,
+    }];
+  }
+}
+
+// ── Component ──────────────────────────────────────────────────────────────
+export default function PriceChart({ mint, data, showRange = 20 }: Props) {
+  const containerRef    = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chartRef        = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const candleSeriesRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const volumeSeriesRef = useRef<any>(null);
-
-  // Keep a ref to data+showRange so subscriptions always see the latest values
-  const dataRef      = useRef(data);
-  const rangeRef     = useRef(showRange);
-  useEffect(() => { dataRef.current = data; },      [data]);
-  useEffect(() => { rangeRef.current = showRange; }, [showRange]);
+  const pluginRef       = useRef<DepthBarsPlugin | null>(null);
 
   const [resolution, setResolution] = useState("60");
   const [candles, setCandles]       = useState<Candle[]>([]);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
 
-  // ── Draw depth bars on canvas ───────────────────────────────────────────
-  const drawDepth = useCallback(() => {
-    const canvas = canvasRef.current;
-    const series = candleSeriesRef.current;
-    const d      = dataRef.current;
-    if (!canvas || !series || !d) return;
-
-    // Use parent container dimensions (reliable after layout)
-    const parent = containerRef.current;
-    if (!parent) return;
-    const W = parent.clientWidth;
-    const H = parent.clientHeight;
-    if (W <= 0 || H <= 0) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
-      canvas.width  = Math.round(W * dpr);
-      canvas.height = Math.round(H * dpr);
-      canvas.style.width  = `${W}px`;
-      canvas.style.height = `${H}px`;
-    }
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-
-    const range   = rangeRef.current;
-    const buckets = d.buckets.filter(b => b.index >= -range && b.index <= range);
-    const maxUsd  = Math.max(...buckets.map(b => b.totalUsd), 1);
-    const MAX_BAR_W = Math.max(80, W * 0.20); // 20% of chart width
-
-    let drawnBars = 0;
-
-    for (const bucket of buckets) {
-      if (bucket.totalUsd <= 0) continue;
-
-      // Price-to-pixel coordinate (returns null if price is out of visible range)
-      const y = series.priceToCoordinate(bucket.priceMid);
-      if (y === null || y < 0 || y > H) continue;
-
-      const isCurrent = bucket.index === 0;
-      const isSupport = bucket.index < 0;
-      const barW  = (bucket.totalUsd / maxUsd) * MAX_BAR_W;
-      const barH  = isCurrent ? 5 : isSupport ? 3 : 2;
-      const alpha = isCurrent ? 1 : isSupport ? 0.85 : 0.35;
-
-      // Dominant source color
-      const dominant = Object.entries(bucket.sources)
-        .filter(([, v]) => v > 0)
-        .sort(([, a], [, b]) => b - a)[0];
-      const hex = dominant ? (SOURCE_COLORS[dominant[0]] ?? "#6b7280") : "#6b7280";
-      const [r, g, b2] = hexToRgb(hex);
-
-      ctx.fillStyle = `rgba(${r},${g},${b2},${alpha})`;
-      // Draw from RIGHT edge extending LEFT
-      ctx.fillRect(W - barW, Math.round(y) - Math.floor(barH / 2), barW, barH);
-      drawnBars++;
-    }
-
-    // Yellow dashed current-price line
-    const currY = series.priceToCoordinate(d.currentPrice);
-    if (currY !== null && currY >= 0 && currY <= H) {
-      ctx.globalAlpha = 0.75;
-      ctx.strokeStyle = "#facc15";
-      ctx.lineWidth   = 1;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(0, Math.round(currY));
-      ctx.lineTo(W, Math.round(currY));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-    }
-
-    // Debug: if nothing drawn, log once
-    if (drawnBars === 0 && buckets.length > 0) {
-      console.warn("[depth] priceToCoordinate returned null for all buckets — chart not ready?");
-    }
-  }, []); // stable — always reads from refs
-
-  // Redraw when data or showRange changes
+  // Push new data into plugin whenever data or showRange changes
   useEffect(() => {
-    requestAnimationFrame(drawDepth);
-  }, [data, showRange, drawDepth]);
+    pluginRef.current?.setData({ buckets: data.buckets, currentPrice: data.currentPrice, showRange });
+  }, [data, showRange]);
 
   // ── Fetch OHLCV ─────────────────────────────────────────────────────────
   const fetchCandles = useCallback(async () => {
@@ -153,7 +171,7 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
 
   useEffect(() => { fetchCandles(); }, [fetchCandles]);
 
-  // ── Init chart ───────────────────────────────────────────────────────────
+  // ── Init chart (once) ───────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -173,8 +191,10 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
             vertLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
             horzLine: { color: "#374151", labelBackgroundColor: "#1f2937" },
           },
-          rightPriceScale: { borderColor: "#21262d", textColor: "#6b7280",
-            scaleMargins: { top: 0.08, bottom: 0.22 } },
+          rightPriceScale: {
+            borderColor: "#21262d", textColor: "#6b7280",
+            scaleMargins: { top: 0.08, bottom: 0.22 },
+          },
           timeScale: { borderColor: "#21262d", timeVisible: true, secondsVisible: false, barSpacing: 8 },
           width:  containerRef.current.clientWidth,
           height: containerRef.current.clientHeight,
@@ -194,9 +214,15 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
         candleSeriesRef.current = candleSeries;
         volumeSeriesRef.current = volumeSeries;
 
-        // Subscribe — always calls current drawDepth (stable ref)
-        chart.timeScale().subscribeVisibleLogicalRangeChange(() => requestAnimationFrame(drawDepth));
-        chart.subscribeCrosshairMove(() => requestAnimationFrame(drawDepth));
+        // Attach depth bars primitive to the candle series
+        const plugin = new DepthBarsPlugin();
+        candleSeries.attachPrimitive(plugin);
+        pluginRef.current = plugin;
+
+        // Push current data into plugin (in case data arrived before chart init)
+        if (data) {
+          plugin.setData({ buckets: data.buckets, currentPrice: data.currentPrice, showRange });
+        }
       }
     );
 
@@ -206,16 +232,15 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
         width:  containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
-      requestAnimationFrame(drawDepth);
     };
     window.addEventListener("resize", handleResize);
     return () => {
       window.removeEventListener("resize", handleResize);
       chart?.remove();
-      chartRef.current = candleSeriesRef.current = volumeSeriesRef.current = null;
+      chartRef.current = candleSeriesRef.current = volumeSeriesRef.current = pluginRef.current = null;
     };
-  // drawDepth is stable (no deps in useCallback)
-  }, [drawDepth]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // init once
 
   // ── Load candle data ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -230,10 +255,7 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
       color: c.close >= c.open ? "#22c55e44" : "#ef444444",
     })));
     chartRef.current?.timeScale().fitContent();
-
-    // Wait for chart to finish fitting before drawing depth
-    setTimeout(() => requestAnimationFrame(drawDepth), 150);
-  }, [candles, drawDepth]);
+  }, [candles]);
 
   const activeSources = Object.entries(SOURCE_COLORS).filter(
     ([src]) => (data.sourceBreakdown[src as keyof typeof data.sourceBreakdown] ?? 0) > 0
@@ -259,12 +281,8 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
         </div>
       </div>
 
-      {/* Chart + canvas overlay */}
+      {/* Chart container — primitive draws directly here */}
       <div ref={containerRef} className="relative flex-1 min-h-0" style={{ background: "#0d1117" }}>
-        {/* Canvas for depth bars — sits on top of chart, pointer-events:none */}
-        <canvas ref={canvasRef} className="absolute inset-0 z-10"
-          style={{ pointerEvents: "none" }} />
-
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-[#0d1117]/80 z-20">
             <div className="flex flex-col items-center gap-2">
@@ -286,7 +304,15 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
       {/* Legend */}
       <div className="shrink-0 flex items-center flex-wrap gap-x-3 gap-y-0.5 px-3 py-1 border-t border-[#1a2030]"
         style={{ background: "#090c12" }}>
-        <span className="text-[9px] text-gray-700">Liquidity overlay:</span>
+        <span className="text-[9px] text-gray-700">Liquidity:</span>
+        <span className="flex items-center gap-1 text-[10px] text-gray-500">
+          <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: "#94a3b8" }} />
+          Support
+        </span>
+        <span className="flex items-center gap-1 text-[10px] text-gray-500">
+          <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: "#f97316" }} />
+          Resistance
+        </span>
         {activeSources.map(([src, color]) => {
           const total = data.sourceBreakdown[src as keyof typeof data.sourceBreakdown] ?? 0;
           return (
