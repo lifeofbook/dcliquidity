@@ -62,21 +62,43 @@ export async function getRaydiumLiquidity(
     const isClmm = pool.type === "Concentrated";
 
     if (isClmm) {
-      // CLMM — liquidity concentrated in ±20% range
-      positions.push({
-        priceLow: tokenPriceUsd * 0.80,
-        priceHigh: tokenPriceUsd * 1.20,
-        liquidityUsd: tvlUsd,
-        source: "raydium",
-      });
+      // CLMM: gaussian distribution centered on current price, ±20% range
+      const RANGE = 40; // 40 bins of 1% each
+      const sigma = RANGE / 5; // σ controls width of gaussian
+      const weights: number[] = [];
+      for (let i = 0; i < RANGE; i++) {
+        const dist = Math.abs(i - RANGE / 2 + 0.5);
+        weights.push(Math.exp(-0.5 * Math.pow(dist / sigma, 2)));
+      }
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      for (let i = 0; i < RANGE; i++) {
+        const idx = i - RANGE / 2;
+        positions.push({
+          priceLow: tokenPriceUsd * Math.pow(1.01, idx),
+          priceHigh: tokenPriceUsd * Math.pow(1.01, idx + 1),
+          liquidityUsd: (tvlUsd * weights[i]) / totalWeight,
+          source: "raydium",
+        });
+      }
     } else {
-      // Standard AMM (constant product) — wide distribution ±50%
-      positions.push({
-        priceLow: tokenPriceUsd * 0.5,
-        priceHigh: tokenPriceUsd * 1.5,
-        liquidityUsd: tvlUsd,
-        source: "raydium",
-      });
+      // Standard AMM (constant product): depth ∝ 1/sqrt(price) across ±100%
+      // This creates more liquidity at lower prices (support) than higher (resistance)
+      const RANGE = 200;
+      const weights: number[] = [];
+      for (let i = 0; i < RANGE; i++) {
+        const relPrice = Math.pow(1.01, i - RANGE / 2 + 0.5);
+        weights.push(1 / Math.sqrt(relPrice));
+      }
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      for (let i = 0; i < RANGE; i++) {
+        const idx = i - RANGE / 2;
+        positions.push({
+          priceLow: tokenPriceUsd * Math.pow(1.01, idx),
+          priceHigh: tokenPriceUsd * Math.pow(1.01, idx + 1),
+          liquidityUsd: (tvlUsd * weights[i]) / totalWeight,
+          source: "raydium",
+        });
+      }
     }
   }
 

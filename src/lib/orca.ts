@@ -50,13 +50,24 @@ export async function getOrcaLiquidity(
       const tvlUsd = pool.tvl ?? 0;
       if (tvlUsd <= 0) continue;
 
-      // Orca Whirlpools are CLMM — concentrate in ±20% range
-      positions.push({
-        priceLow: tokenPriceUsd * 0.80,
-        priceHigh: tokenPriceUsd * 1.20,
-        liquidityUsd: tvlUsd,
-        source: "orca",
-      });
+      // Orca Whirlpools are CLMM: gaussian distribution ±20% around current price
+      const RANGE = 40; // 40 buckets of 1% each
+      const sigma = RANGE / 5;
+      const weights: number[] = [];
+      for (let i = 0; i < RANGE; i++) {
+        const dist = Math.abs(i - RANGE / 2 + 0.5);
+        weights.push(Math.exp(-0.5 * Math.pow(dist / sigma, 2)));
+      }
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      for (let i = 0; i < RANGE; i++) {
+        const idx = i - RANGE / 2;
+        positions.push({
+          priceLow: tokenPriceUsd * Math.pow(1.01, idx),
+          priceHigh: tokenPriceUsd * Math.pow(1.01, idx + 1),
+          liquidityUsd: (tvlUsd * weights[i]) / totalWeight,
+          source: "orca",
+        });
+      }
     }
 
     return positions;

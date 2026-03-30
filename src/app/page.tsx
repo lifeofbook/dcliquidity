@@ -199,23 +199,29 @@ export default function HomePage() {
             {/* Right: Liquidity depth panel */}
             <div
               className="shrink-0 flex flex-col"
-              style={{ width: "340px", background: "#0d1117" }}
+              style={{ width: "380px", background: "#0d1117" }}
             >
               {/* Panel header */}
-              <div className="shrink-0 px-3 py-2 border-b border-[#21262d]">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-gray-400 font-medium">
-                    Liquidity Depth
-                  </span>
-                  <span className="text-[10px] text-gray-600">
-                    ±{chartRange}% range
-                  </span>
-                </div>
+              <div className="shrink-0 px-3 py-2 border-b border-[#21262d] flex items-center justify-between">
+                <span className="text-xs text-white font-semibold">Liquidity Depth</span>
+                <span className="text-[10px] text-gray-600">±{chartRange}% range</span>
+              </div>
+
+              {/* Resistance zone label */}
+              <div className="shrink-0 px-3 py-1 flex items-center gap-1.5" style={{ background: "rgba(239,68,68,0.05)" }}>
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500/50" />
+                <span className="text-[10px] text-red-400/70 font-medium">RESISTANCE — Bar panjang = susah tembus ke atas</span>
               </div>
 
               {/* Depth chart fills remaining height */}
               <div className="flex-1 min-h-0 overflow-y-auto">
                 <LiquidityChart data={data} showRange={chartRange} />
+              </div>
+
+              {/* Support zone label */}
+              <div className="shrink-0 px-3 py-1 flex items-center gap-1.5 border-t border-[#21262d]" style={{ background: "rgba(34,197,94,0.05)" }}>
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500/50" />
+                <span className="text-[10px] text-green-400/70 font-medium">SUPPORT — Bar panjang = susah tembus ke bawah</span>
               </div>
             </div>
           </div>
