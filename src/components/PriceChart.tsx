@@ -47,51 +47,57 @@ class DepthBarsRenderer {
     if (!this._data || !this._series) return;
     const { buckets, currentPrice, showRange } = this._data;
 
-    // useBitmapCoordinateSpace sets transform=scale(dpr,dpr) so coordinates
-    // are still in CSS/media pixels — use mediaSize for boundaries, and use
-    // priceToCoordinate() result directly (it already returns media pixels).
-    target.useBitmapCoordinateSpace(({ context: ctx, mediaSize }) => {
-      const W = mediaSize.width;   // CSS-pixel width of the pane
-      const H = mediaSize.height;  // CSS-pixel height of the pane
+    // useBitmapCoordinateSpace gives physical (bitmap) pixel coordinates.
+    // priceToCoordinate() returns CSS (logical) pixel coordinates.
+    // We must multiply by verticalPixelRatio / horizontalPixelRatio to convert
+    // CSS pixels → bitmap pixels, and use bitmapSize for boundary checks.
+    target.useBitmapCoordinateSpace(({ context: ctx, bitmapSize, horizontalPixelRatio, verticalPixelRatio }) => {
+      const W = bitmapSize.width;
+      const H = bitmapSize.height;
 
       const visible = buckets.filter(b => b.index >= -showRange && b.index <= showRange && b.totalUsd > 0);
       if (visible.length === 0) return;
 
       const maxUsd = Math.max(...visible.map(b => b.totalUsd), 1);
-      const MAX_BAR_W = Math.max(60, W * 0.22); // 22% of chart width, min 60px
-      const BAR_H      = 3; // CSS pixels — DPR transform makes it crisp
-      const CURR_BAR_H = 5;
+      const MAX_BAR_W = Math.max(80 * horizontalPixelRatio, W * 0.28);
+      const BAR_H      = 6 * verticalPixelRatio;
+      const CURR_BAR_H = 10 * verticalPixelRatio;
 
       for (const bucket of visible) {
-        // priceToCoordinate → CSS pixels from top of pane (media coords)
-        const y = this._series.priceToCoordinate(bucket.priceMid) as number | null;
-        if (y === null || y === undefined || y < 0 || y > H) continue;
+        // priceToCoordinate → CSS pixels; scale to bitmap pixels
+        const yMedia = this._series.priceToCoordinate(bucket.priceMid) as number | null;
+        if (yMedia === null || yMedia === undefined) continue;
+        const y = Math.round(yMedia * verticalPixelRatio);
+        if (y < 0 || y > H) continue;
 
         const isCurrent = bucket.index === 0;
         const isSupport = bucket.index < 0;
-        const barW = Math.max(1, (bucket.totalUsd / maxUsd) * MAX_BAR_W);
+        const barW = Math.max(horizontalPixelRatio, (bucket.totalUsd / maxUsd) * MAX_BAR_W);
         const barH = isCurrent ? CURR_BAR_H : BAR_H;
 
         if (isCurrent)       ctx.fillStyle = "rgba(250,204,21,0.9)";
         else if (isSupport)  ctx.fillStyle = "rgba(148,163,184,0.85)"; // grey
         else                 ctx.fillStyle = "rgba(249,115,22,0.75)";  // orange
 
-        ctx.fillRect(W - barW, Math.round(y) - Math.floor(barH / 2), barW, barH);
+        ctx.fillRect(W - barW, y - Math.floor(barH / 2), barW, barH);
       }
 
       // Yellow dashed current-price horizontal line
-      const currY = this._series.priceToCoordinate(currentPrice) as number | null;
-      if (currY !== null && currY !== undefined && currY >= 0 && currY <= H) {
-        ctx.globalAlpha = 0.7;
-        ctx.strokeStyle = "#facc15";
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([5, 4]);
-        ctx.beginPath();
-        ctx.moveTo(0, Math.round(currY));
-        ctx.lineTo(W, Math.round(currY));
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 1;
+      const currYMedia = this._series.priceToCoordinate(currentPrice) as number | null;
+      if (currYMedia !== null && currYMedia !== undefined) {
+        const currY = Math.round(currYMedia * verticalPixelRatio);
+        if (currY >= 0 && currY <= H) {
+          ctx.globalAlpha = 0.7;
+          ctx.strokeStyle = "#facc15";
+          ctx.lineWidth   = verticalPixelRatio;
+          ctx.setLineDash([5 * horizontalPixelRatio, 4 * horizontalPixelRatio]);
+          ctx.beginPath();
+          ctx.moveTo(0, currY);
+          ctx.lineTo(W, currY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+        }
       }
     });
   }
@@ -235,7 +241,22 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
 
   // ── Load candle data ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current || candles.length === 0) return;
+    if (!candleSeriesRef.current || !volumeSeriesRef.current) return;
+
+    if (candles.length === 0) {
+      // No OHLCV available — insert a synthetic tick at current price so that
+      // the chart has a price scale and priceToCoordinate() works for depth bars.
+      const p = data.currentPrice;
+      if (p > 0) {
+        const now = Math.floor(Date.now() / 1000) as import("lightweight-charts").UTCTimestamp;
+        candleSeriesRef.current.setData([{
+          time: now, open: p, high: p * 1.15, low: p * 0.85, close: p,
+        }]);
+        volumeSeriesRef.current.setData([{ time: now, value: 0, color: "#22c55e44" }]);
+      }
+      return;
+    }
+
     candleSeriesRef.current.setData(candles.map(c => ({
       time: c.time as import("lightweight-charts").UTCTimestamp,
       open: c.open, high: c.high, low: c.low, close: c.close,
@@ -246,7 +267,8 @@ export default function PriceChart({ mint, data, showRange = 20 }: Props) {
       color: c.close >= c.open ? "#22c55e44" : "#ef444444",
     })));
     chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candles, data.currentPrice]);
 
   const activeSources = Object.entries(SOURCE_COLORS).filter(
     ([src]) => (data.sourceBreakdown[src as keyof typeof data.sourceBreakdown] ?? 0) > 0
