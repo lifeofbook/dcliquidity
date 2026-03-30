@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import TokenSearch from "@/components/TokenSearch";
 import LiquidityChart from "@/components/LiquidityChart";
 import type { AggregatedLiquidity } from "@/types";
+import { formatPrice } from "@/lib/aggregator";
 
 // Dynamically import PriceChart (uses browser-only lightweight-charts)
 const PriceChart = dynamic(() => import("@/components/PriceChart"), { ssr: false });
@@ -199,48 +200,28 @@ export default function HomePage() {
             {/* Right: Liquidity depth panel */}
             <div
               className="shrink-0 flex flex-col border-l border-[#21262d]"
-              style={{ width: "360px", background: "#0a0d14" }}
+              style={{ width: "320px", background: "#090c12" }}
             >
-              {/* Header */}
+              {/* Header: title + price + range */}
               <div
                 className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[#1a2030]"
                 style={{ background: "#0d1117" }}
               >
-                <div>
-                  <span className="text-xs text-white font-semibold">Liquidity Depth</span>
-                  <span className="text-[10px] text-gray-600 ml-2">±{chartRange}% range</span>
+                <div className="flex flex-col">
+                  <span className="text-[11px] text-white font-semibold">Liquidity Depth</span>
+                  <span className="text-[9px] text-gray-600">±{chartRange}% range</span>
                 </div>
-                <div className="text-right">
-                  <div className="text-xs text-white font-mono font-bold">
-                    {new Intl.NumberFormat("en-US", {
-                      style: "currency",
-                      currency: "USD",
-                      maximumFractionDigits: data.currentPrice < 0.001 ? 8 : data.currentPrice < 1 ? 6 : 4,
-                    }).format(data.currentPrice)}
-                  </div>
-                  <div className="text-[10px] text-gray-500">{data.token.symbol}/USD</div>
+                <div className="flex flex-col items-end">
+                  <span className="text-[11px] text-white font-mono font-bold">
+                    {formatPrice(data.currentPrice)}
+                  </span>
+                  <span className="text-[9px] text-gray-600">{data.token.symbol}/USD</span>
                 </div>
-              </div>
-
-              {/* Resistance label */}
-              <div className="shrink-0 flex items-center gap-1 px-2 py-0.5" style={{ background: "rgba(239,68,68,0.07)" }}>
-                <span className="text-[9px] text-red-400/60 font-semibold tracking-wider uppercase">
-                  ↑ Resistance
-                </span>
-                <span className="text-[9px] text-gray-700 ml-1">— bar panjang = susah naik</span>
               </div>
 
               {/* Depth chart — fills all remaining height */}
               <div className="flex-1 min-h-0">
                 <LiquidityChart data={data} showRange={chartRange} />
-              </div>
-
-              {/* Support label */}
-              <div className="shrink-0 flex items-center gap-1 px-2 py-0.5" style={{ background: "rgba(34,197,94,0.07)" }}>
-                <span className="text-[9px] text-green-400/60 font-semibold tracking-wider uppercase">
-                  ↓ Support
-                </span>
-                <span className="text-[9px] text-gray-700 ml-1">— bar panjang = susah turun</span>
               </div>
             </div>
           </div>
